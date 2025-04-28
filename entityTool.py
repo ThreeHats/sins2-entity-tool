@@ -10,10 +10,11 @@ import logging
 from pathlib import Path
 from research_view import ResearchTreeView
 import os
-from command_stack import CommandStack, EditValueCommand, AddPropertyCommand, DeleteArrayItemCommand, DeletePropertyCommand, CompositeCommand, TransformWidgetCommand, AddArrayItemCommand, CreateFileFromCopy, CreateLocalizedText, CreateResearchSubjectCommand, DeleteResearchSubjectCommand, DeleteFileCommand
+from command_stack import CommandStack, EditValueCommand, AddPropertyCommand, DeleteArrayItemCommand, DeletePropertyCommand, ConditionalPropertyChangeCommand, CompositeCommand, TransformWidgetCommand, AddArrayItemCommand, CreateFileFromCopy, CreateLocalizedText, CreateResearchSubjectCommand, DeleteResearchSubjectCommand, DeleteFileCommand
 from typing import List, Any
 import threading
 import pygame.mixer
+import traceback
 
 
 # add debug logging
@@ -3365,6 +3366,79 @@ class EntityToolGUI(QMainWindow):
             
             # Only do a full refresh if we have no data path AND it's not an array update
             should_full_refresh = data_path is None and not is_array_update
+
+            # Check if properties need to be added or removed due to conditional schema
+            property_changes = False
+            
+            if data_path and len(data_path) > 0:
+                # Get the parent object's path and schema
+                parent_path = data_path[:-1]
+                parent_schema = self.get_schema_for_path(parent_path)
+                
+                # Check if the parent has conditional schema (allOf with if/then)
+                if isinstance(parent_schema, dict) and "allOf" in parent_schema:
+                    # Get the parent object's data
+                    parent_data = new_data
+                    current = parent_data
+                    for key in parent_path:
+                        if isinstance(current, dict) and key in current:
+                            current = current[key]
+                        elif isinstance(current, list) and isinstance(key, int) and key < len(current):
+                            current = current[key]
+                        else:
+                            current = None
+                            break
+                    
+                    if current is not None:
+                        # For conditional schemas, if we're changing a property that appears in any "if" condition,
+                        # check if the condition match status has changed and force a refresh
+                        changing_key = data_path[-1] if data_path else None
+                        
+                        # Create a copy of the current data with the new value applied
+                        modified_data = None
+                        if changing_key is not None and isinstance(current, dict):
+                            modified_data = current.copy()
+                            modified_data[changing_key] = value
+                        
+                        # Check each condition to see if its match status changed
+                        if modified_data:
+                            for subschema in parent_schema["allOf"]:
+                                if "if" in subschema and "then" in subschema:
+                                    # Check if the condition status would change with the new value
+                                    current_matches = self.schema_condition_matches(subschema["if"], current)
+                                    would_match = self.schema_condition_matches(subschema["if"], modified_data)
+                                    
+                                    if current_matches != would_match:
+                                        print(f"Condition match status changed from {current_matches} to {would_match}")
+                                        print(f"This will trigger a full refresh")
+                                        property_changes = True
+                                        break
+                        
+                        # Also check if we need to add or remove properties based on conditions
+                        if not property_changes:
+                            for subschema in parent_schema["allOf"]:
+                                if "if" in subschema and "then" in subschema:
+                                    matches_condition = self.schema_condition_matches(subschema["if"], current)
+                                    
+                                    if matches_condition:
+                                        # Check if we need to add required properties
+                                        if "required" in subschema["then"]:
+                                            for prop_name in subschema["then"]["required"]:
+                                                if prop_name not in current:
+                                                    print(f"Need to add required property {prop_name}")
+                                                    property_changes = True
+                                                    break
+                                        
+                                        # Check if we need to add properties defined in the then clause
+                                        if "properties" in subschema["then"]:
+                                            for prop_name in subschema["then"]["properties"]:
+                                                if prop_name not in current:
+                                                    print(f"Need to add conditional property {prop_name}")
+                                                    property_changes = True
+                                                    break
+            
+            # Force full refresh if property changes are detected
+            should_full_refresh = should_full_refresh or property_changes
             
             if should_full_refresh:
                 print("Full refresh")
@@ -3410,19 +3484,26 @@ class EntityToolGUI(QMainWindow):
                 # Partial update - find and update specific widget
                 logging.debug("Performing partial update")
                 
-                def find_widget_by_path(widget: QWidget, target_path: List[str]) -> QWidget:
-                    """Recursively find a widget by its data path"""
-                    if hasattr(widget, 'property'):
-                        widget_path = widget.property('data_path')
-                        if widget_path == target_path:
+                def find_widget_by_path(starting_widget, target_path):
+                    """Find a widget in the UI by its data path starting from a specific widget"""
+                    # Start with the schema view container (parent of all widgets)
+                    schema_view = None
+                    current = starting_widget
+                    while current:
+                        if isinstance(current, QScrollArea) and current.property("file_path"):
+                            schema_view = current
+                            break
+                        current = current.parent()
+                            
+                    if not schema_view:
+                        return None
+                        
+                    # Look through all widgets with matching data path
+                    for widget in schema_view.findChildren(QWidget):
+                        if hasattr(widget, 'property') and widget.property("data_path") == target_path:
+                            # Found a widget with matching path
                             return widget
                             
-                    # Search children
-                    if hasattr(widget, 'children'):
-                        for child in widget.children():
-                            result = find_widget_by_path(child, target_path)
-                            if result is not None:
-                                return result
                     return None
                 
                 if is_array_update:
@@ -3449,11 +3530,9 @@ class EntityToolGUI(QMainWindow):
                                     array_content = widget
                                     array_content_layout = array_content.layout()
                                     if array_content_layout:
-                                        return
                                         # Skip widget creation if flag is set
                                         if array_content.property("skip_widget_creation"):
                                             print("Skipping widget creation")
-
                                             continue
                                         
                                         # Create widget for the new array item
@@ -3499,7 +3578,6 @@ class EntityToolGUI(QMainWindow):
                             target_widget.setCurrentText(str(value) if value is not None else "")
                         # Update original value property
                         target_widget.setProperty("original_value", value)
-        
         # Initial content update with command stack data
         update_content(display_data)
         
@@ -3525,21 +3603,48 @@ class EntityToolGUI(QMainWindow):
             
         # Handle schema references
         original_schema = schema
-        if "$ref" in schema:
-            ref_path = schema["$ref"].split("/")[1:]  # Skip the '#'
-            current = self.current_schema
-            for part in ref_path:
-                if part in current:
-                    current = current[part]
+        schema = self.resolve_schema_references(schema)
+        
+        # Process allOf for the root schema
+        if isinstance(schema, dict) and "allOf" in schema:
+            print(f"Processing allOf in create_widget_for_schema at path {path}")
+            # Process allOf conditions for top-level schema
+            base_schema = {k: v for k, v in schema.items() if k != "allOf"}
+            for subschema in schema["allOf"]:
+                if "if" in subschema and "then" in subschema:
+                    if self.schema_condition_matches(subschema["if"], data):
+                        print(f"Condition matched for data: {data}")
+                        print(f"Adding conditional properties: {list(subschema['then'].get('properties', {}).keys())}")
+                        base_schema = self.merge_schemas(base_schema, subschema["then"])
                 else:
-                    return QLabel(f"Invalid reference: {schema['$ref']}")
-            schema = current
+                    base_schema = self.merge_schemas(base_schema, subschema)
+            schema = base_schema
+            print(f"Final merged properties: {list(schema.get('properties', {}).keys())}")
             
         schema_type = schema.get("type")
         if not schema_type:
             return QLabel("Schema missing type")
             
         if schema_type == "object":
+            # Add any properties that are in the data but not in the schema properties
+            # This handles cases like conditional properties that didn't get processed above
+            if "properties" in schema:
+                for key in data.keys():
+                    if key not in schema["properties"] and key != "$schema":
+                        # Create a generic schema for this property based on its type
+                        value_type = type(data[key])
+                        if value_type == int:
+                            schema["properties"][key] = {"type": "integer"}
+                        elif value_type == float:
+                            schema["properties"][key] = {"type": "number"}
+                        elif value_type == bool:
+                            schema["properties"][key] = {"type": "boolean"}
+                        elif value_type == str:
+                            schema["properties"][key] = {"type": "string"}
+                        elif value_type == list:
+                            schema["properties"][key] = {"type": "array", "items": {}}
+                        elif value_type == dict:
+                            schema["properties"][key] = {"type": "object", "properties": {}}
             # Create container for object properties
             container = QWidget()
             container_layout = QVBoxLayout(container)
@@ -3552,6 +3657,11 @@ class EntityToolGUI(QMainWindow):
             
             # Sort properties alphabetically but prioritize common fields
             priority_fields = ["name", "description", "id", "type", "version"]
+
+            # Make sure properties dictionary exists
+            if "properties" not in schema:
+                schema["properties"] = {}
+
             properties = schema.get("properties", {}).items()
             sorted_properties = sorted(properties, 
                                     key=lambda x: (x[0] not in priority_fields, x[0].lower()))
@@ -3561,6 +3671,10 @@ class EntityToolGUI(QMainWindow):
             for prop_name in required_props:
                 if prop_name not in data and prop_name in schema.get("properties", {}):
                     data[prop_name] = self.get_default_value(schema["properties"][prop_name])
+
+            # Debug print all properties in data that should be displayed
+            print(f"Data keys at path {path}: {list(data.keys())}")
+            print(f"Schema properties at path {path}: {list(schema.get('properties', {}).keys())}")
             
             for prop_name, prop_schema in sorted_properties:
                 # For new objects, show all required properties and existing properties
@@ -4169,7 +4283,6 @@ class EntityToolGUI(QMainWindow):
 
             # Handle enum values
             if "enum" in schema:
-                # Create dropdown for enum values
                 combo = QComboBox()
                 combo.addItems(schema["enum"])
                 current_index = combo.findText(value_str)
@@ -4177,10 +4290,12 @@ class EntityToolGUI(QMainWindow):
                     combo.setCurrentIndex(current_index)
                 if is_base_game:
                     combo.setStyleSheet("color: #666666; font-style: italic;")
-                    combo.setEnabled(False)  # Disable combo box for base game content
+                    combo.setEnabled(False)  # Disable for base game content
                 else:
-                    # Connect currentTextChanged signal to command creation
-                    combo.currentTextChanged.connect(lambda text: self.on_combo_changed(combo, text))
+                    # Connect to our new handler for conditional properties 
+                    combo.currentTextChanged.connect(
+                        lambda text, c=combo: self.on_conditional_value_changed(c, text)
+                    )
                 
                 # Install wheel event filter
                 combo.installEventFilter(self.wheel_filter)
@@ -4283,13 +4398,15 @@ class EntityToolGUI(QMainWindow):
             
         elif schema_type == "boolean":
             checkbox = QCheckBox()
-            checkbox.setChecked(bool(current_value))
+            checkbox.setChecked(bool(value))
             if is_base_game:
                 checkbox.setStyleSheet("color: #666666; font-style: italic;")
-                checkbox.setEnabled(False)  # Disable checkbox for base game content
+                checkbox.setEnabled(False)
             else:
-                # Connect stateChanged signal to command creation
-                checkbox.stateChanged.connect(lambda state: self.on_checkbox_changed(checkbox, state))
+                # Connect with conditional handler
+                checkbox.toggled.connect(
+                    lambda checked, c=checkbox: self.on_conditional_value_changed(c, checked)
+                )
             
             # Store path and original value
             checkbox.setProperty("data_path", path)
@@ -4342,6 +4459,183 @@ class EntityToolGUI(QMainWindow):
             
             return edit
 
+    def on_conditional_value_changed(self, widget, new_value):
+        """Handle changes to values that might trigger conditional schema changes"""
+        try:
+            # Get file path from parent schema view
+            file_path = self.get_schema_view_file_path(widget)
+            if not file_path:
+                print("No file path found for conditional property change")
+                return
+                    
+            data_path = widget.property("data_path")
+            old_value = widget.property("original_value")
+            
+            print(f"Conditional value changed: {data_path} from {old_value} to {new_value}")
+            
+            if data_path is not None and old_value != new_value:
+                # Get the schema for this path
+                parent_path = data_path[:-1]
+                property_name = data_path[-1]
+                parent_schema = self.get_schema_for_path(parent_path)
+                
+                if not parent_schema:
+                    print(f"No schema found for path {parent_path}")
+                    return
+                
+                # Check if this might affect conditional properties
+                has_conditional = False
+                if "allOf" in parent_schema:
+                    for subschema in parent_schema["allOf"]:
+                        if "if" in subschema and "then" in subschema:
+                            condition = subschema.get("if", {})
+                            if "properties" in condition and property_name in condition["properties"]:
+                                has_conditional = True
+                                break
+                
+                # Show warning if this is a conditional property change
+                if has_conditional:
+                    reply = QMessageBox.warning(
+                        self,
+                        "Conditional Property Change",
+                        "This change will add or remove other properties based on schema conditions.\n\n"
+                        "This action cannot be undone. Continue?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                    )
+                    
+                    if reply != QMessageBox.StandardButton.Yes:
+                        # Revert the widget to its original value
+                        if isinstance(widget, QComboBox):
+                            widget.setCurrentText(str(old_value))
+                        elif isinstance(widget, QCheckBox):
+                            widget.setChecked(bool(old_value))
+                        elif isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
+                            widget.setValue(old_value)
+                        elif isinstance(widget, QLineEdit):
+                            widget.setText(str(old_value))
+                        print(f"Conditional change canceled, reverted to {old_value}")
+                        return
+                
+                # Create a command to update the value
+                command = EditValueCommand(
+                    file_path,
+                    data_path,
+                    old_value,
+                    new_value,
+                    lambda value: widget.setProperty("original_value", value),
+                    lambda path, value: self.update_data_value(path, value)
+                )
+                command.source_widget = widget
+                
+                # Execute the command (this will update the data and call the widget update function)
+                self.command_stack.push(command)
+                
+                # For conditional changes, immediately clear the undo stack to prevent undoing
+                if has_conditional:
+                    # Get the current data after the update
+                    current_data = self.command_stack.get_file_data(file_path)
+                    data_modified = False
+                    
+                    # Navigate to target data object
+                    target_data = current_data
+                    for key in parent_path:
+                        if isinstance(target_data, dict) and key in target_data:
+                            target_data = target_data[key]
+                        elif isinstance(target_data, list) and isinstance(key, int) and key < len(target_data):
+                            target_data = target_data[key]
+                        else:
+                            print(f"Could not navigate to target data at path {parent_path}")
+                            target_data = None
+                            break
+                    
+                    # Only continue if we successfully navigated to the target object
+                    if target_data is not None:
+                        # Now check for conditional properties that need to be added or removed
+                        if "allOf" in parent_schema:
+                            for subschema in parent_schema["allOf"]:
+                                if "if" in subschema and "then" in subschema:
+                                    # Check if the condition matches the new value
+                                    condition = subschema.get("if", {})
+                                    if "properties" in condition and property_name in condition["properties"]:
+                                        prop_condition = condition["properties"][property_name]
+                                        
+                                        # Check if this condition matches our new value
+                                        new_matches = False
+                                        if "const" in prop_condition and prop_condition["const"] == new_value:
+                                            new_matches = True
+                                        elif "enum" in prop_condition and new_value in prop_condition["enum"]:
+                                            new_matches = True
+                                            
+                                        # Properties to add or remove based on condition
+                                        if new_matches:
+                                            then_clause = subschema.get("then", {})
+                                            if "properties" in then_clause:
+                                                # Handle properties at the root level of the then clause
+                                                for prop, prop_schema in then_clause["properties"].items():
+                                                    # Look for direct properties (not nested objects with their own properties)
+                                                    if isinstance(prop_schema, dict) and prop_schema.get("type") != "object":
+                                                        # Add property if it doesn't exist
+                                                        if prop not in target_data:
+                                                            default_value = self.get_default_value(prop_schema)
+                                                            target_data[prop] = default_value
+                                                            data_modified = True
+                                                            print(f"Added property {prop} with default value {default_value}")
+                                                    # Handle nested object properties - extract inner properties
+                                                    elif isinstance(prop_schema, dict) and prop_schema.get("type") == "object" and "properties" in prop_schema:
+                                                        for nested_prop, nested_schema in prop_schema["properties"].items():
+                                                            if nested_prop not in target_data:
+                                                                default_value = self.get_default_value(nested_schema)
+                                                                target_data[nested_prop] = default_value
+                                                                data_modified = True
+                                                                print(f"Added nested property {nested_prop} with default value {default_value}")
+                                        else:
+                                            # Condition doesn't match, check if we need to remove properties
+                                            then_clause = subschema.get("then", {})
+                                            if "properties" in then_clause:
+                                                # Handle properties at the root level
+                                                for prop, prop_schema in then_clause["properties"].items():
+                                                    if isinstance(prop_schema, dict) and prop_schema.get("type") != "object":
+                                                        if prop in target_data:
+                                                            del target_data[prop]
+                                                            data_modified = True
+                                                            print(f"Removed property {prop} due to condition change")
+                                                    # Handle nested object properties
+                                                    elif isinstance(prop_schema, dict) and prop_schema.get("type") == "object" and "properties" in prop_schema:
+                                                        for nested_prop in prop_schema["properties"]:
+                                                            if nested_prop in target_data:
+                                                                del target_data[nested_prop]
+                                                                data_modified = True
+                                                                print(f"Removed nested property {nested_prop} due to condition change")
+                    
+                    # CRITICAL: Update the command stack with the modified data if needed
+                    if data_modified:
+                        self.command_stack.update_file_data(file_path, current_data)
+                    
+                    # Now refresh the entire schema view to update conditional properties
+                    print("Refreshing schema view after conditional property change")
+                    self.refresh_schema_view(file_path)
+                    
+                    # Clear undo stack for this file to prevent undoing this conditional change
+                    new_undo_stack = []
+                    for cmd in self.command_stack.undo_stack:
+                        if cmd.file_path != file_path:
+                            new_undo_stack.append(cmd)
+                    self.command_stack.undo_stack = new_undo_stack
+                    
+                    # Set status message
+                    self.status_label.setText("Conditional property change applied (cannot be undone)")
+                    self.status_label.setProperty("status", "warning")
+                    self.status_label.style().unpolish(self.status_label)
+                    self.status_label.style().polish(self.status_label)
+                
+                # Update the save button state
+                self.update_save_button()
+                
+        except Exception as e:
+            print(f"Error handling conditional property change: {str(e)}")
+            traceback.print_exc()
+            
     def load_referenced_entity(self, entity_id: str, entity_type: str):
         """Load a referenced entity file and display it in the appropriate panel"""
         if not isinstance(entity_id, str):
@@ -4682,7 +4976,7 @@ class EntityToolGUI(QMainWindow):
             return
     
     def get_schema_for_path(self, path: list) -> dict:
-        """Get the schema for a specific data path"""
+        """Get the schema for a specific data path, handling conditional logic"""
         if not self.current_schema:
             print("No current schema available")
             return None
@@ -4692,56 +4986,229 @@ class EntityToolGUI(QMainWindow):
             return self.current_schema
             
         schema = self.current_schema
-        for part in path:
+        current_data = self.command_stack.get_file_data(self.current_file) if hasattr(self, 'current_file') else None
+        if not current_data and hasattr(self, 'current_data'):
+            current_data = self.current_data
+        
+        current_path = []
+        
+        for i, part in enumerate(path):
             if not schema:
-                print(f"Schema is None while processing path part: {part}")
                 return None
                 
             # Resolve any references in the current schema
+            schema = self.resolve_schema_references(schema)
+            
+            # Track the current path for evaluating conditions
+            if i > 0:
+                current_path.append(path[i-1])
+            
+            # Handle conditional schemas (allOf/if/then)
             if isinstance(schema, dict):
-                if "$ref" in schema:
-                    # Resolve reference
-                    ref_path = schema["$ref"].split("/")[1:]
-                    current = self.current_schema
-                    for ref_part in ref_path:
-                        if ref_part in current:
-                            current = current[ref_part]
+                # Process allOf conditions first
+                if "allOf" in schema:
+                    base_schema = {k: v for k, v in schema.items() if k != "allOf"}
+                    # Navigate to current data object to check against conditions
+                    data_at_path = current_data
+                    for p in current_path:
+                        if isinstance(data_at_path, dict) and p in data_at_path:
+                            data_at_path = data_at_path[p]
+                        elif isinstance(data_at_path, list) and isinstance(p, int) and p < len(data_at_path):
+                            data_at_path = data_at_path[p]
                         else:
-                            return None
-                    schema = current
+                            data_at_path = None
+                            break
+                    
+                    # Check each condition in allOf
+                    for subschema in schema["allOf"]:
+                        if "if" in subschema and "then" in subschema:
+                            # Check if condition matches current data
+                            if data_at_path and self.schema_condition_matches(subschema["if"], data_at_path):
+                                print(f"Condition matched for path {current_path}, adding properties: {list(subschema['then'].get('properties', {}).keys())}")
+                                # Merge the "then" schema into the base schema
+                                base_schema = self.merge_schemas(base_schema, subschema["then"])
+                            else:
+                                print(f"Condition did NOT match for path {current_path}")
+                        else:
+                            # If no condition, just merge the subschema
+                            base_schema = self.merge_schemas(base_schema, subschema)
+                    
+                    # Replace the original schema with the merged result
+                    schema = base_schema
+                    print(f"Final merged schema properties: {list(schema.get('properties', {}).keys())}")
                 
-                if isinstance(part, str):
-                    # Object property
-                    if "properties" in schema and part in schema["properties"]:
+                # Now navigate to the next part based on schema type
+                if schema.get("type") == "object" and "properties" in schema and isinstance(part, str):
+                    if part in schema["properties"]:
                         schema = schema["properties"][part]
                     else:
-                        return None
-                elif isinstance(part, int):
-                    # Array index - get the items schema
-                    if "items" in schema:
-                        schema = schema["items"]
-                        # Resolve any references in the items schema
-                        if isinstance(schema, dict) and "$ref" in schema:
-                            ref_path = schema["$ref"].split("/")[1:]
-                            current = self.current_schema
-                            for ref_part in ref_path:
-                                if ref_part in current:
-                                    current = current[ref_part]
-                                else:
-                                    return None
-                            schema = current
-                    else:
-                        return None
-                        
+                        return None  # Property not found in schema
+                elif schema.get("type") == "array" and "items" in schema:
+                    schema = schema["items"]
+                else:
+                    # We've hit a leaf node or unknown schema type
+                    return schema
+            
         return schema
 
+    def schema_condition_matches(self, condition: dict, data: any) -> bool:
+        """Check if data matches a schema condition"""
+        # Handle simple property conditions
+        if not isinstance(condition, dict) or not isinstance(data, dict):
+            return False
+            
+        if "properties" in condition:
+            # Check all properties in the condition
+            for prop_name, prop_condition in condition["properties"].items():
+                if prop_name not in data:
+                    return False
+                
+                # Check for const value match
+                if "const" in prop_condition and data[prop_name] != prop_condition["const"]:
+                    return False
+                    
+                # Check for enum value match
+                if "enum" in prop_condition and data[prop_name] not in prop_condition["enum"]:
+                    return False
+        
+        return True
+
+    def merge_schemas(self, schema1: dict, schema2: dict) -> dict:
+        """Merge two schemas together, handling special properties"""
+        if not schema1:
+            return schema2.copy() if schema2 else {}
+        if not schema2:
+            return schema1.copy()
+                
+        result = schema1.copy()
+        
+        # Handle properties merging
+        if "properties" in schema2:
+            if "properties" not in result:
+                result["properties"] = {}
+            for prop_name, prop_schema in schema2["properties"].items():
+                result["properties"][prop_name] = prop_schema.copy()
+        
+        # Handle required properties
+        if "required" in schema2:
+            if "required" not in result:
+                result["required"] = []
+            result["required"] = list(set(result["required"] + schema2["required"]))
+        
+        # Handle other simple properties
+        for key, value in schema2.items():
+            if key not in ["properties", "required", "allOf", "if", "then", "else"]:
+                result[key] = value
+        
+        return result
+
+    def resolve_schema_references(self, schema: dict) -> dict:
+            """Resolve schema references recursively, handling circular references"""
+            if not schema or not isinstance(schema, dict):
+                return schema
+            
+            # Use a cache to avoid infinite recursion with circular references
+            if not hasattr(self, '_ref_cache'):
+                self._ref_cache = {}
+                    
+            # Return from cache if this exact reference was already resolved
+            if "$ref" in schema and schema["$ref"] in self._ref_cache:
+                # Merge any additional properties from the original schema
+                cached = self._ref_cache[schema["$ref"]]
+                return {**cached, **{k: v for k, v in schema.items() if k != "$ref"}}
+            
+            if "$ref" in schema:
+                ref_path = schema["$ref"].split("/")[1:]  # Skip the first '#' element
+                
+                # Store the original schema path as a string to detect circular references
+                ref_key = schema["$ref"]
+                
+                # Mark this ref as being processed (to detect circular refs)
+                self._ref_cache[ref_key] = {}
+                
+                # Find the referenced schema
+                resolved = None
+                if ref_path[0] == "$defs" and len(ref_path) > 1 and ref_path[1] in self.current_schema.get("$defs", {}):
+                    # Reference within the same schema
+                    resolved = self.current_schema["$defs"][ref_path[1]]
+                else:
+                    # Look through all loaded schemas
+                    for loaded_schema in self.schemas.values():
+                        try:
+                            resolved = loaded_schema
+                            for part in ref_path:
+                                resolved = resolved[part]
+                            break
+                        except (KeyError, TypeError):
+                            continue
+                            
+                if resolved:
+                    # Merge any additional properties from the original schema
+                    result = {**resolved, **{k: v for k, v in schema.items() if k != "$ref"}}
+                    
+                    # Recursively resolve any references in the resolved schema
+                    if "$ref" in result:
+                        result = self.resolve_schema_references(result)
+                        
+                    # Update cache with fully resolved schema
+                    self._ref_cache[ref_key] = result
+                    return result
+                else:
+                    # If reference can't be resolved, return the original schema
+                    print(f"Warning: Could not resolve schema reference: {schema['$ref']}")
+                    return schema
+            
+            # Handle nested objects
+            result = schema.copy()
+            
+            # Process allOf - merge all the subschemas
+            if "allOf" in result:
+                base_schema = {k: v for k, v in result.items() if k != "allOf"}
+                for subschema in result["allOf"]:
+                    resolved_subschema = self.resolve_schema_references(subschema)
+                    base_schema = self.merge_schemas(base_schema, resolved_subschema)
+                
+                # Remove allOf from the result to avoid reprocessing
+                result = base_schema
+                # Delete allOf key if it still exists after merging
+                if "allOf" in result:
+                    del result["allOf"]
+            
+            # Handle if/then/else
+            if "if" in result and ("then" in result or "else" in result):
+                result["if"] = self.resolve_schema_references(result["if"])
+                if "then" in result:
+                    result["then"] = self.resolve_schema_references(result["then"])
+                if "else" in result:
+                    result["else"] = self.resolve_schema_references(result["else"])
+            
+            # Handle properties
+            if "properties" in result:
+                resolved_props = {}
+                for prop_name, prop_schema in result["properties"].items():
+                    resolved_props[prop_name] = self.resolve_schema_references(prop_schema)
+                result["properties"] = resolved_props
+            
+            # Handle items for arrays
+            if "items" in result:
+                if isinstance(result["items"], dict):
+                    result["items"] = self.resolve_schema_references(result["items"])
+                elif isinstance(result["items"], list):
+                    result["items"] = [self.resolve_schema_references(item) for item in result["items"]]
+            
+            return result
+
     def get_default_value(self, schema: dict) -> any:
-        """Get a default value for a schema"""
+        """Get a default value for a schema, handling conditional schemas"""
         # Resolve any references first
         schema = self.resolve_schema_references(schema)
         
         if not schema:
             return None
+        
+        # Handle defaultValue if specified in the schema
+        if "default" in schema:
+            return schema["default"]
             
         schema_type = schema.get("type")
         
@@ -4790,6 +5257,17 @@ class EntityToolGUI(QMainWindow):
                     prop_schema = self.resolve_schema_references(properties[prop_name])
                     result[prop_name] = self.get_default_value(prop_schema)
             
+            # Handle conditionally required properties (from allOf/if/then)
+            if "allOf" in schema:
+                for subschema in schema["allOf"]:
+                    if "if" in subschema and "then" in subschema and "required" in subschema["then"]:
+                        # When creating a default value, include all potential required properties
+                        # from conditions as we don't know which will apply
+                        for prop_name in subschema["then"]["required"]:
+                            if prop_name not in result and prop_name in properties:
+                                prop_schema = self.resolve_schema_references(properties[prop_name])
+                                result[prop_name] = self.get_default_value(prop_schema)
+            
             # If unevaluatedProperties is false, add all optional properties too
             if schema.get("unevaluatedProperties") is False:
                 for prop_name, prop_schema in properties.items():
@@ -4800,41 +5278,6 @@ class EntityToolGUI(QMainWindow):
             return result
             
         return None
-
-    def resolve_schema_references(self, schema: dict) -> dict:
-        """Resolve schema references recursively"""
-        if not schema:
-            return schema
-            
-        if "$ref" in schema:
-            ref_path = schema["$ref"].split("/")[1:]  # Skip the first '#' element
-            # Find the referenced schema in the loaded schemas
-            for loaded_schema in self.schemas.values():
-                try:
-                    resolved = loaded_schema
-                    for part in ref_path:
-                        resolved = resolved[part]
-                    # Merge any additional properties from the original schema
-                    resolved = {**resolved, **{k: v for k, v in schema.items() if k != "$ref"}}
-                    return resolved
-                except (KeyError, TypeError):
-                    continue
-            # If we get here, we couldn't resolve the reference
-            print(f"Warning: Could not resolve schema reference: {schema['$ref']}")
-            return schema
-            
-        # Handle nested objects
-        if "properties" in schema:
-            resolved_props = {}
-            for prop_name, prop_schema in schema["properties"].items():
-                resolved_props[prop_name] = self.resolve_schema_references(prop_schema)
-            schema["properties"] = resolved_props
-            
-        # Handle arrays
-        if "items" in schema:
-            schema["items"] = self.resolve_schema_references(schema["items"])
-            
-        return schema
 
     def create_generic_schema(self, data: dict) -> dict:
         """Create a generic schema that matches any JSON structure"""
@@ -4867,16 +5310,16 @@ class EntityToolGUI(QMainWindow):
         else:
             return {"type": "string"}  # Default to string for all other types
 
-    def get_schema_view_file_path(self, widget: QWidget) -> Path | None:
-        """Get the file path from the parent schema view of a widget"""
-        # Walk up the widget hierarchy until we find a QScrollArea (schema view)
+    def get_schema_view_file_path(self, widget):
+        """Find the file path associated with a widget in a schema view"""
+        # Start with this widget and search up the parent chain
         current = widget
         while current is not None:
+            # Check if this is a QScrollArea with a file_path property (schema view container)
             if isinstance(current, QScrollArea):
                 file_path_str = current.property("file_path")
                 if file_path_str:
                     return Path(file_path_str)
-                break
             current = current.parent()
         return None
 
@@ -4898,7 +5341,7 @@ class EntityToolGUI(QMainWindow):
 
         if not data:
             return
-            
+                
         # Find the schema view widget
         schema_view = None
         for widget in self.findChildren(QWidget):
@@ -4911,6 +5354,10 @@ class EntityToolGUI(QMainWindow):
             # Get the schema type from the file extension
             schema_type = file_path.suffix[1:]  # Remove the dot
             
+            print(f"Refreshing schema view for {file_path}")
+            print(f"Schema type: {schema_type}")
+            print(f"Data: {data}")
+                
             # Create new schema view
             new_view = self.create_schema_view(
                 schema_type,
@@ -5085,19 +5532,51 @@ class EntityToolGUI(QMainWindow):
         old_value = widget.property("original_value")
         
         if data_path is not None and old_value != new_text:
-            command = EditValueCommand(
-                file_path,
-                data_path,
-                old_value,
-                new_text,
-                lambda value: widget.setCurrentText(value),
-                self.update_data_value
-            )
-            command.source_widget = widget  # Track which widget initiated the change
-            self.command_stack.push(command)
-            widget.setProperty("original_value", new_text)
-            self.update_save_button()  # Update save button state
+            # Get the parent schema to check if this property has conditional behavior
+            parent_path = data_path[:-1]
+            parent_schema = self.get_schema_for_path(parent_path)
             
+            # Property is conditional if parent schema contains allOf with if/then conditions
+            is_conditional = False
+            if parent_schema and isinstance(parent_schema, dict) and "allOf" in parent_schema:
+                # Check if any conditions specifically reference this property
+                property_name = data_path[-1]
+                for subschema in parent_schema["allOf"]:
+                    if "if" in subschema and "then" in subschema:
+                        # Check if property is referenced in any condition
+                        if_condition = subschema.get("if", {}).get("properties", {})
+                        if property_name in if_condition:
+                            print(f"Conditional property change detected: {data_path}")
+                            is_conditional = True
+                            break
+            
+            if is_conditional:
+                # Use specialized command for conditional properties
+                command = ConditionalPropertyChangeCommand(
+                    file_path,
+                    data_path,
+                    old_value,
+                    new_text,
+                    lambda value: widget.setProperty("original_value", value),
+                    lambda path, value: self.update_data_value(path, value),
+                    self
+                )
+            else:
+                # Use regular command for non-conditional properties
+                command = EditValueCommand(
+                    file_path,
+                    data_path,
+                    old_value,
+                    new_text,
+                    lambda value: widget.setProperty("original_value", value),
+                    lambda path, value: self.update_data_value(path, value)
+                )
+                
+            command.source_widget = widget
+            self.command_stack.push(command)
+            
+            self.update_save_button()
+
     def on_spin_changed(self, widget: QSpinBox | QDoubleSpinBox, new_value: int | float):
         """Handle value changes in QSpinBox and QDoubleSpinBox widgets"""
         # Get file path from parent schema view

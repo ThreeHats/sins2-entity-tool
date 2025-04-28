@@ -28,7 +28,7 @@ Create a copy of your mod folder before using this tool, and save your changes o
 
 ### Setup
 
-1. Download the latest release from [Latest Release](https://github.com/JustAnotherIdea/sins2-entity-tool/releases/latest)
+1. Download the latest release from [Latest Release](https://github.com/ThreeHats/sins2-entity-tool/releases/latest)
    - For Windows users: Download the `.exe` file, place it in a folder, and run it.
    - For other platforms: Download the source code and follow the manual installation steps
 
@@ -37,7 +37,7 @@ Create a copy of your mod folder before using this tool, and save your changes o
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/JustAnotherIdea/sins2-entity-tool.git
+git clone https://github.com/ThreeHats/sins2-entity-tool.git
 cd sins2-entity-tool
 ```
 
@@ -161,4 +161,4 @@ For support, please:
 
 ## Roadmap
 
-Check the [GitHub Issues](https://github.com/JustAnotherIdea/sins2-entity-tool/issues) and [project board](https://github.com/users/JustAnotherIdea/projects/6) for the latest updates.
+Check the [GitHub Issues](https://github.com/ThreeHats/sins2-entity-tool/issues) and [project board](https://github.com/users/ThreeHats/projects/6) for the latest updates.

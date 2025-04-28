@@ -1435,6 +1435,151 @@ class DeletePropertyCommand(Command):
         if hasattr(self, 'file_path') and self.file_path:
             self.gui.refresh_schema_view(self.file_path)
 
+class ConditionalPropertyChangeCommand(Command):
+    """Command for changing a property that affects conditional schema elements"""
+    def __init__(self, file_path: Path, data_path: list, old_value: any, new_value: any, 
+                 update_widget_func: Callable, update_data_func: Callable, gui):
+        super().__init__(file_path, data_path, old_value, new_value)
+        self.update_widget_func = update_widget_func
+        self.update_data_func = update_data_func
+        self.gui = gui
+        
+        # Store complete data snapshots for undo/redo
+        self.old_data = None
+        self.new_data = None
+        
+        # Prepare the command by analyzing schema conditions
+        self.prepare()
+        
+    def prepare(self):
+        """Analyze schema and data to determine what properties should be added or removed"""
+        try:
+            # Get the current data
+            self.old_data = self.gui.command_stack.get_file_data(self.file_path)
+            if not self.old_data:
+                return
+                
+            # Create a deep copy for new data
+            self.new_data = json.loads(json.dumps(self.old_data))
+            
+            # Get parent path and property name
+            parent_path = self.data_path[:-1]
+            property_name = self.data_path[-1]
+            
+            # Get the target object in new_data
+            target_data = self.new_data
+            for key in parent_path:
+                if key in target_data:
+                    target_data = target_data[key]
+                else:
+                    # Path doesn't exist in data
+                    return
+                    
+            # Update the property with new value
+            if isinstance(target_data, dict):
+                target_data[property_name] = self.new_value
+                
+                # Get the schema for the parent object
+                parent_schema = self.gui.get_schema_for_path(parent_path)
+                
+                # Process conditional schema elements
+                if parent_schema and isinstance(parent_schema, dict) and "allOf" in parent_schema:
+                    properties_to_remove = set()
+                    properties_to_add = {}
+                    
+                    # Get the target object in old_data for comparison
+                    old_target = self.old_data
+                    for key in parent_path:
+                        if key in old_target:
+                            old_target = old_target[key]
+                        else:
+                            old_target = None
+                            break
+                            
+                    # Keep a copy for condition matching
+                    old_copy = json.loads(json.dumps(old_target)) if old_target else {}
+                    
+                    # Analyze schema conditions to find properties to add/remove
+                    for subschema in parent_schema["allOf"]:
+                        if "if" in subschema and "then" in subschema:
+                            old_matches = self.gui.schema_condition_matches(subschema["if"], old_copy)
+                            new_matches = self.gui.schema_condition_matches(subschema["if"], target_data)
+                            
+                            # Properties to remove (matched old but not new)
+                            if old_matches and not new_matches:
+                                print(f"Condition no longer matches: {subschema['if']}")
+                                if "then" in subschema and "properties" in subschema["then"]:
+                                    for prop in subschema["then"]["properties"].keys():
+                                        properties_to_remove.add(prop)
+                            
+                            # Properties to add (matches new but not old)
+                            if not old_matches and new_matches:
+                                print(f"New condition matches: {subschema['if']}")
+                                if "then" in subschema and "properties" in subschema["then"]:
+                                    for prop, schema in subschema["then"]["properties"].items():
+                                        properties_to_add[prop] = schema
+                    
+                    print(f"Properties to remove: {properties_to_remove}")
+                    print(f"Properties to add: {properties_to_add}")
+                    
+                    # Remove properties
+                    for prop in properties_to_remove:
+                        if prop in target_data and prop not in properties_to_add:
+                            print(f"Removing property: {prop}")
+                            target_data.pop(prop)
+                    
+                    # Add new properties with default values
+                    for prop, schema in properties_to_add.items():
+                        if prop not in target_data:
+                            print(f"Adding property: {prop}")
+                            
+                            if schema.get('type') == 'object' and 'properties' in schema:
+                                # Create object with required properties
+                                target_data[prop] = {}
+                                
+                                if 'required' in schema:
+                                    for req_prop in schema['required']:
+                                        if req_prop in schema['properties']:
+                                            req_schema = schema['properties'][req_prop]
+                                            default_val = self.gui.get_default_value(req_schema)
+                                            target_data[prop][req_prop] = default_val
+                                            print(f"  Adding required nested property: {req_prop} = {default_val}")
+                            else:
+                                # Add simple property
+                                default_val = self.gui.get_default_value(schema)
+                                target_data[prop] = default_val
+                                print(f"  Added with default value: {default_val}")
+        except Exception as e:
+            print(f"Error preparing conditional command: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def update_widget_safely(self, value: any):
+        """Try to update widget, but don't fail if widget is gone"""
+        try:
+            self.update_widget_func(value)
+        except RuntimeError as e:
+            print(f"Widget was deleted, skipping UI update: {str(e)}")
+        
+    def undo(self):
+        """Restore the old data structure"""
+        print(f"Undoing ConditionalPropertyChangeCommand for {self.file_path}")
+        self.update_widget_safely(self.old_value)
+        
+        # Restore entire data structure
+        if self.old_data:
+            self.gui.command_stack.update_file_data(self.file_path, self.old_data)
+            self.gui.refresh_schema_view(self.file_path)
+        
+    def redo(self):
+        """Apply the new data structure"""
+        print(f"Redoing ConditionalPropertyChangeCommand for {self.file_path}")
+        self.update_widget_safely(self.new_value)
+        
+        # Apply entire updated data structure
+        if self.new_data:
+            self.gui.command_stack.update_file_data(self.file_path, self.new_data)
+            self.gui.refresh_schema_view(self.file_path)
 class CreateFileFromCopy(Command):
     """Command for creating a copy of a file and updating manifests"""
     def __init__(self, gui, source_file: str, source_type: str, new_name: str, overwrite: bool = False):

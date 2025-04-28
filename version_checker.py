@@ -9,7 +9,7 @@ import markdown
 
 class VersionChecker:
     def __init__(self, dev_mode=False):
-        self.github_api = "https://api.github.com/repos/JustAnotherIdea/sins2-entity-tool/releases/latest"
+        self.github_api = "https://api.github.com/repos/ThreeHats/sins2-entity-tool/releases/latest"
         self.current_version = "0.0.1"  # This will be updated during build
         self.app_dir = self._get_app_directory()
         self.dev_mode = dev_mode
