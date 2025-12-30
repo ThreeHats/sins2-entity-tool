@@ -1,164 +1,142 @@
 # Sins 2 Entity Tool
 
-A powerful GUI tool for modding Sins of a Solar Empire II entities, research, and other game data.
+A desktop GUI application for editing Sins of a Solar Empire II mod files—entities, research trees, localization, and more—without manually wrangling JSON.
 
-This is not an official tool. For the official tools go to [https://github.com/StardockCorp/sins2modtools](https://github.com/StardockCorp/sins2modtools), or download them from steam.
+> **⚠️ Beta Release** — Backup your mod folder before use. This tool is functional but still under active development.
 
-## NOTE: This is a Beta release
+[![Demo Video](https://img.shields.io/badge/▶_Demo_Video-YouTube-red)](https://youtu.be/2VGNgComdik?si=5GnYF6CmZ_XoJkFS) [![Latest Release](https://img.shields.io/github/v/release/ThreeHats/sins2-entity-tool)](https://github.com/ThreeHats/sins2-entity-tool/releases/latest)
 
-Backup your data before use!
+---
 
-This is a beta release, and as such, there are no guarantees that it will work as expected 100% of the time.
+## Why This Tool?
 
-Create a copy of your mod folder before using this tool, and save your changes often.
+Modding Sins of a Solar Empire II involves editing deeply nested JSON files that reference game schemas, textures, sounds, and localized text across multiple directories. Mistakes are easy; feedback is slow.
 
-## [Demo Video](https://youtu.be/2VGNgComdik?si=5GnYF6CmZ_XoJkFS)
+**Sins 2 Entity Tool** provides:
+- **Form-based editing** — Properties render as appropriate controls (spinboxes, checkboxes, dropdowns) based on the game's JSON schemas
+- **Visual asset selection** — Browse and preview textures and hear sound files before linking them
+- **Research tree visualization** — Edit tech trees graphically instead of tracing JSON references
+- **Undo/Redo** — A command-stack system tracks changes so you can safely experiment
+- **Live validation** — Required fields are bold; base-game values are italicized; read-only fields are greyed out
+
+This is a community tool. For the official modding tools, see [StardockCorp/sins2modtools](https://github.com/StardockCorp/sins2modtools).
+
+---
 
 ## Features
 
-- 🎮 Edit game entities, research trees, and other game data with a user-friendly interface
-- 🔄 Real-time preview of changes
-- 🎨 Visual texture and icon selection
-- 🔊 Sound file preview and selection
-- 📝 Built-in localization text editor
-- ↩️ Undo/Redo functionality for *most* changes
-- 🔍 Smart search and filtering capabilities
-- 🔄 Automatic updates
-- 📊 Base game file and schema reference support
+| Category | Capabilities |
+|----------|--------------|
+| **Entity Editing** | Form-based UI auto-generated from official JSON schemas; context menus for adding/removing properties |
+| **Research Trees** | Visual node graph editor for research subjects across all domains |
+| **Asset Browsing** | Texture preview, sound playback (via Pygame), file selectors for mod and base game assets |
+| **Localization** | Inline editing of localized text keys and values |
+| **Workflow** | Undo/Redo (Ctrl+Z/Y), drag-and-drop mod folder loading, automatic update checks |
 
-### Setup
+---
 
-1. Download the latest release from [Latest Release](https://github.com/ThreeHats/sins2-entity-tool/releases/latest)
-   - For Windows users: Download the `.exe` file, place it in a folder, and run it.
-   - For other platforms: Download the source code and follow the manual installation steps
+## Quick Start
 
+### Download (Windows)
 
-#### Manual Installation
+1. Grab the `.exe` from the [Latest Release](https://github.com/ThreeHats/sins2-entity-tool/releases/latest)
+2. Place it in any folder and run it
+3. On first launch, configure your **base game folder** and **mod folder** paths in Settings
 
-1. Clone the repository:
+### Run from Source (All Platforms)
+
 ```bash
 git clone https://github.com/ThreeHats/sins2-entity-tool.git
 cd sins2-entity-tool
-```
-
-2. Create and activate a virtual environment (recommended):
-```bash
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+python main.py
 ```
 
-## Usage
+Use `--dev` to skip update checks during development.
 
-1. Launch the application:
-    - If using the installer version, run the installed application
-    - If using source code: `python main.py`
+---
 
-2. First-time Setup:
-    - Set your base game folder path in the settings
-    - Set your mod folder path
+## Usage Overview
 
-3. Basic Operations:
-    - Open mod folder by clicking the "Open Mod Folder" button or dragging and dropping the mod folder onto the application
-        - If you are starting a fresh mod, or are new to modding, you can use another mod as a template.
-    - Make changes using the intuitive form interface
-    - Save changes using the Save button or Ctrl+S
-    - Undo/Redo using Ctrl+Z and Ctrl+Y or the buttons in the toolbar
-    - Select the player faction using the dropdown in the top right corner
+1. **Open a mod** — Click "Open Mod Folder" or drag-and-drop a mod directory onto the window
+2. **Navigate tabs** — Entities, Research, Uniforms, and other game data are organized into tabs
+3. **Edit properties** — Click any entity to load its schema-driven form; right-click for context actions
+4. **Preview assets** — Texture fields show thumbnails; sound fields let you play audio before selecting
+5. **Save** — Ctrl+S or the Save button; changes are written back to the mod's JSON files
 
-    - Create or delete a player faction by clicking the "+/-" button
-    - Refresh any view with the refresh button in the corner (this is needed when making changes to the research tree, and can help fix some issues).
+### Research Tree Editor
 
-4. Features:
-    - Things are styled bold if they are required, italic if they are from the base game, and greyed out if they are non-editable.
-    - Right click for context menus.
-    - Right click anywhere inside the entity data to add a "root" property (this refresh may take a second, so be patient).
-    - Each property and array has a context menu to delete it, or add to it.
-    - Each "string" value is displayed as the "type" it is.
-        - References to other entities are shown as buttons.
-        - References to localized text are shown as two seperate text fields (one for the key, one for the value).
-        - References to textures are shown as a text field with a preview of the texture.
-    - Each string has a context menu to select from various options.
-        - File: Select any file from the mod or base game, and optionally create a copy of it.
-            - When createing a copy from the base game you will be given the option to override the file by keeping the same name and not adding it to the manifest.
-            - Otherwise it will be added to the manifest and the mod folder with a new name.
-        - Uniforms: Select any value from uniforms from the mod or base game.
-        - Localized Text: Select any localized text from the mod or base game.
-        - Texture: Select any texture from the mod or base game, and see a preview of it.
-        - Sound: Select any sound from the mod or base game, and hear a preview of it.
-    - View and edit the research tree using the "Research" tab.
-        - Change domains with the buttons on the top.
-        - Click on a research subject to edit it.
-        - Right click anywhere to create a new research subject (copying one from the base game or mod, this cannot be undone).
-        - Right click on a research subject to delete it (this cannot be undone).
-    - Other tabs are mostly self explanatory.
-        - Click on an entity to view its properties in the appropriate panel and edit them there.
-        - Refresh any time you feel like the view has not updated correctly.
-        - Note that larger entities may take a second or two to load, and adding/removing root properties causes a full refresh.
+- Switch domains using the buttons at the top
+- Click a node to edit its research subject
+- Right-click to create or delete subjects (creates/removes the underlying JSON file)
 
-## Known Issues
+### Tips
 
-- Sometimes the context menu does not appear (or does not show the correct options). If this happens, try refreshing the view.
-- Adding or removing a root property to a large entity may take a second or two.
-- Strings may become a button to an exotic file when that doesn't make sense.
-- Multiple undo/redo operations may cause the application to not show the correct view. If this happens, refresh the view.
-- It is possible to undo/redo past what you should be able to do. If this happens, the application may crash.
-- Invalid properties will not be shown in the view at all (in the future they will be shown in a different color).
-- Player icons, portrait files, and sound files are not yet supported.
+- **Bold** = required field | *Italic* = inherited from base game | Grey = read-only
+- Right-click inside entity data to add root-level properties
+- Refresh the view if the UI gets out of sync after complex edits
 
-## Development
+---
 
-### Project Structure
+## Tech Stack
 
-- `main.py` - Application entry point (use --dev to disable version checking)
-- `entityTool.py` - Main application logic and GUI (this file is way too long, I apologize in advance)
-- `research_view.py` - Research tree visualization and editing
-- `command_stack.py` - Undo/redo functionality implementation
-- `version_checker.py` - Update checking and management
-- `style.qss` - Application styling
-- `config.json` - User configuration storage
+| Layer | Technology |
+|-------|------------|
+| GUI Framework | PyQt6 |
+| Audio Playback | Pygame |
+| Schema Validation | jsonschema |
+| Update System | GitHub Releases API + requests |
 
-### Building from Source
+---
 
-To create an executable:
+## Project Structure
 
-1. Install PyInstaller:
+```
+main.py             # Entry point; handles updates and launches GUI
+entityTool.py       # Main window, schema rendering, asset selectors (~6500 lines)
+research_view.py    # QGraphicsView-based research tree visualization
+command_stack.py    # Undo/Redo command pattern implementation (~2500 lines)
+version_checker.py  # GitHub release polling and download logic
+style.qss           # Dark theme stylesheet
+config.json         # Persisted user settings (paths)
+```
+
+---
+
+## Building an Executable
+
 ```bash
 pip install pyinstaller
-```
-
-2. Build the executable:
-```bash
 python -m PyInstaller entity-tool.spec
 ```
 
-The executable will be created in the `dist` directory.
+Output lands in `dist/`.
 
-## Configuration
+---
 
-The application stores its configuration in `config.json`, which includes:
-- Base game folder path
-- Mod folder path
+## Known Limitations
+
+- Context menus occasionally require a view refresh to appear correctly
+- Large entities may take 1–2 seconds to load or refresh
+- Excessive undo/redo can sometimes desync the view (refresh to fix)
+- Player icons and portrait files are not yet fully supported
+
+See [GitHub Issues](https://github.com/ThreeHats/sins2-entity-tool/issues) for the full list.
+
+---
+
+## Contributing & Support
+
+- **Issues**: [GitHub Issues](https://github.com/ThreeHats/sins2-entity-tool/issues)
+- **Roadmap**: [Project Board](https://github.com/users/ThreeHats/projects/6)
+- **Community**: [Discord Server](https://discord.com/invite/sinsofasolarempire) → [Entity Tool Thread](https://discord.com/channels/266693357093257216/1329849082675462144)
+
+---
 
 ## Acknowledgments
 
-- Sins of a Solar Empire II developers for the amazing game and the tools they have provided
-- All the modders who created the mods that I have used in testing
-- PyQt6 framework
-- Pygame (for the sound preview)
-
-## Support
-
-For support, please:
-1. Check the existing issues on GitHub
-2. Create a new issue if your problem hasn't been reported (I will be adding known issues as they are found)
-3. Join the [Discord server](https://discord.com/invite/sinsofasolarempire) and head over to the [Entity Tool Thread](https://discord.com/channels/266693357093257216/1329849082675462144) in the sins2-modders-showcase channel.
-
-
-## Roadmap
-
-Check the [GitHub Issues](https://github.com/ThreeHats/sins2-entity-tool/issues) and [project board](https://github.com/users/ThreeHats/projects/6) for the latest updates.
+- Stardock and Ironclad Games for Sins of a Solar Empire II and the official mod tools
+- The Sins modding community for testing and feedback
+- PyQt6 and Pygame maintainers
