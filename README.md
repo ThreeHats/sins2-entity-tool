@@ -1,6 +1,6 @@
 # Sins 2 Entity Tool
 
-A desktop GUI application for editing Sins of a Solar Empire II mod files—entities, research trees, localization, and more—without manually wrangling JSON.\
+A desktop GUI application for editing Sins of a Solar Empire II mod files—entities, research trees, localization, and more—without manually wrangling JSON.
 
 <img width="1924" height="1050" alt="sins2-entity-tool" src="https://github.com/user-attachments/assets/de661766-ec2f-467d-b9f8-53b8c824fa8f" />
 
